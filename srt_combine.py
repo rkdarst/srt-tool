@@ -44,43 +44,54 @@ def recolor(subs, color):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--color', default='#87cefa')
-    parser.add_argument('--lang', default='fi')
-    parser.add_argument('--model', default='large-v3')
-    parser.add_argument('--no-new-mkv', action='store_true')
-    parser.add_argument('video', nargs='+', type=Path)
+    parser.add_argument('--color', default='#87cefa', help='Default %(default)s')
+    parser.add_argument('--lang', default='fi', help='Default %(default)s')
+    parser.add_argument('--model', default='large-v3', help='Default %(default)s')
 
     subparsers = parser.add_subparsers()
 
-    parser_combine = subparsers.add_parser('combine')
-    parser_combine.add_argument('srt1', type=Path)
-    parser_combine.add_argument('srt2', type=Path)
-    parser_combine.add_argument('srtout', type=Path)
+    sp_auto = subparsers.add_parser('auto', help="Transcribe, translate, and combine subs, make new .mkv file")
+    sp_auto.add_argument('video', nargs='+', type=Path)
+    sp_auto.add_argument('--no-new-mkv', action='store_true')
+    sp_auto.add_argument('--re-combine', action='store_true', help="Recombine to .xx.srt, .new.mkv even if they already exist.")
+    sp_auto.set_defaults(single=True)
 
-    parser_trs = subparsers.add_parser('transcribe')
-    parser_trs.add_argument('video', nargs='+', type=Path)
-    parser_trs.set_default(transcribe=True)
+    sp_single = subparsers.add_parser('simple', help="Transcribe to *.srt (no language code in filename)")
+    sp_single.add_argument('video', nargs='+', type=Path)
+    sp_single.set_defaults(simple=True)
 
-    parser_trl = subparsers.add_parser('translate')
-    parser_trl.add_argument('video', nargs='+', type=Path)
-    parser_trs.set_default(translate=True)
+    sp_combine = subparsers.add_parser('combine', help='combine two srt files, coloring the second one')
+    sp_combine.add_argument('srt1', type=Path)
+    sp_combine.add_argument('srt2', type=Path)
+    sp_combine.add_argument('srtout', type=Path)
 
+    sp_trs = subparsers.add_parser('transcribe', help='transcribe to *.LANG.srt')
+    sp_trs.add_argument('video', nargs='+', type=Path)
+    sp_trs.set_defaults(transcribe=True)
+
+    sp_trl = subparsers.add_parser('translate', help='translate to (english) *.ex.srt')
+    sp_trl.add_argument('video', nargs='+', type=Path)
+    sp_trs.set_defaults(translate=True)
 
     args = parser.parse_args()
     print(args)
 
+    # Single mode
+    if hasattr(args, 'simple'):
+        for video in args.video:
+            whisper(video, output=video.with_suffix('.srt'), args=args)
     # Combine
-    if hasattr(args, 'srtout'):
+    elif hasattr(args, 'srtout'):
         combine(args.srt1, args.srt2, args.srtout, args=args)
     # Transcribe
-    if hasattr(args, 'transcribe'):
+    elif hasattr(args, 'transcribe'):
         for video in args.video:
             whisper(video, output=video.with_suffix(f'.{args.lang}.srt'), args=args)
     # Translate
-    if hasattr(args, 'translate'):
+    elif hasattr(args, 'translate'):
         for video in args.video:
             whisper(video, output=video.with_suffix('.ex.srt'), translate=True, args=args)
-    # Default: trs + trl + combine + make new mkv
+    # Default = auto: trs + trl + combine + make new mkv
     else:
         whisper_auto(args=args)
 
@@ -88,17 +99,18 @@ def whisper_auto(args):
 
     for video in args.video:
         output = video.with_suffix('.new.mkv')
-        if output.exists():
-            print('Already exists:', output)
-            continue
-
         srt1 = video.with_suffix(f'.{args.lang}.srt')
         srt2 = video.with_suffix('.ex.srt')
         srtout = video.with_suffix('.xx.srt')
-        whisper(video, srt1, args=args) # transcribe
-        whisper(video, srt2, translate=True, args=args) # translate
+        if not output.exists() and not args.re_combine:
+            continue
+        if not output.exists():
+            if not srt1.exists(): whisper(video, srt1, args=args) # transcribe
+            if not srt2.exists(): whisper(video, srt2, translate=True, args=args) # translate
         combine(srt1, srt2, srtout, args=args)
 
+        if args.no_new_mkv:
+            return
         cmd = [
             'mkvmerge',
             video,
