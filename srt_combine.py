@@ -102,7 +102,7 @@ def whisper_auto(args):
         srt1 = video.with_suffix(f'.{args.lang}.srt')
         srt2 = video.with_suffix('.ex.srt')
         srtout = video.with_suffix('.xx.srt')
-        if not output.exists() and not args.re_combine:
+        if output.exists() and not args.re_combine:
             continue
         if not output.exists():
             if not srt1.exists(): whisper(video, srt1, args=args) # transcribe
