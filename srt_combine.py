@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-"""Combine srt files and/or generate them with whisper
+"""Combine srt files and/or generate them with whisper.
 """
 import argparse
 import itertools
@@ -13,36 +13,16 @@ import srt
 
 __version__ = '0.1.0'
 
-
-def whisper(video, output, translate=False, *, args):
-    if Path(output).exists():
-        return
-    with tempfile.TemporaryDirectory(prefix='whisper-') as tmpdir:
-        cmd = [
-            'whisper-ctranslate2',
-            'file:'+str(video),
-            '--compute_type=float32',
-            '--output_format=srt',
-            '--language='+args.lang,
-            '--model='+args.model,
-            '--threads=8', '--condition_on_previous_text=False',
-            *(['--task=translate'] if translate else []),
-            '--output_dir='+tmpdir,
-            ]
-        subprocess.run(cmd, check=True)
-        print(tuple(Path(tmpdir).iterdir()))
-        shutil.copyfile(Path(tmpdir)/(Path('file:'+str(video)).stem+'.srt'),
-                        output)
-
-
-def recolor(subs, color):
-    """Iterate through srt subs, applying a color to all"""
-    for s in subs:
-        s.content = '\n'.join(f'<font color="{color}">{x}</font>' for x in s.content.split('\n'))
-        yield s
+WHISPER_ARGS = [
+    '--compute_type=float32',  # makes it work on CPUs
+    '--threads=8',
+    '--condition_on_previous_text=False',  # improves quality a bit
+    ]
 
 
 def main():
+    """Main program logic: split by sub-command.
+    """
     parser = argparse.ArgumentParser()
     parser.add_argument('--color', default='#87cefa', help='Default %(default)s')
     parser.add_argument('--lang', default='fi', help='Default %(default)s')
@@ -95,13 +75,52 @@ def main():
     else:
         whisper_auto(args=args)
 
+
+
+def whisper(video, output, translate=False, *, args):
+    """Run whisper with specifid input/output/arguments."""
+    if Path(output).exists():
+        return
+    with tempfile.TemporaryDirectory(prefix='whisper-') as tmpdir:
+        cmd = [
+            'whisper-ctranslate2',
+            'file:'+str(video),
+            *WHISPER_ARGS,
+            '--output_format=srt',
+            '--language='+args.lang,
+            '--model='+args.model,
+            *(['--task=translate'] if translate else []),
+            '--output_dir='+tmpdir,
+            ]
+        subprocess.run(cmd, check=True)
+        print(tuple(Path(tmpdir).iterdir()))
+        shutil.copyfile(Path(tmpdir)/(Path('file:'+str(video)).stem+'.srt'),
+                        output)
+
+
+
+def recolor(subs, color):
+    """Iterate through srt subs, applying a color to all"""
+    for s in subs:
+        s.content = '\n'.join(f'<font color="{color}">{x}</font>' for x in s.content.split('\n'))
+        yield s
+
+
+
 def whisper_auto(args):
+    """Automatically run translate/transcribe/combine to new file.
+
+    - Whisper transcribe
+    - Whisper translate
+    - Combine them into one srt file
+    - Create a .new.mkv file
+    """
 
     for video in args.video:
         output = video.with_suffix('.new.mkv')
         srt1 = video.with_suffix(f'.{args.lang}.srt')
-        srt2 = video.with_suffix('.ex.srt')
-        srtout = video.with_suffix('.xx.srt')
+        srt2 = video.with_suffix('.en.srt')
+        srtout = video.with_suffix('.mul.srt')
         if output.exists() and not args.re_combine:
             continue
         if not output.exists():
@@ -124,7 +143,9 @@ def whisper_auto(args):
         subprocess.run(cmd, check=True)
 
 
+
 def combine(srt1, srt2, srtout, *, args):
+    """Combine two srt files into one.  The second one gets a color."""
 
     subs1 = srt.parse(open(srt1))
     subs2 = srt.parse(open(srt2))
