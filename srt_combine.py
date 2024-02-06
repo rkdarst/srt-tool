@@ -36,11 +36,16 @@ def main():
 
     subparsers = parser.add_subparsers()
 
-    sp_auto = subparsers.add_parser('auto', help="Transcribe, translate, and combine subs, make new .mkv file")
+    sp_auto = subparsers.add_parser('auto', help="Transcribe, translate, and combine subs, make new .mkv file.  If extension is .orig.mkv, output is .new.mkv, otherwise it is .new.mkv replacing the last portion.")
     sp_auto.add_argument('video', nargs='+', type=Path)
     sp_auto.add_argument('--no-new-mkv', action='store_true')
     sp_auto.add_argument('--re-combine', action='store_true', help="Recombine to .xx.srt, .new.mkv even if they already exist.")
-    sp_auto.add_argument('--sid-original', help="Original subtitle id for translation")
+    sp_auto.add_argument('--sid-original', help="Original subtitle id for translation.  If given without --sid-original-lang, this is the subtitle track number.  If given with that option, it is relative to all subtitles of thet language (and can be negative to say 'the last one'")
+    sp_auto.add_argument('--sid-original-lang', help="Original subtitle id for translation.  Use ffprobe to see what the options are.")
+    sp_auto.add_argument('--argos', action='store_true', default=False,
+                         help="Argos translate the original subtitles, requires --sid-original.")
+    sp_auto.add_argument('--google', action='store_true',
+                         help="Google translate (requires manual interaction), requires --sid-original.")
     sp_auto.set_defaults(auto=True)
 
     sp_single = subparsers.add_parser('simple', help="Transcribe to *.srt (no language code in filename)")
@@ -126,11 +131,42 @@ def batched(iter_, n):
         i += n
 
 
-def srts_from_file(video, track):
+def srts_from_file(video, track, track_language=None):
+    """Grab srt subtitles from a file.
+
+    `track` is the subtitle track ID (starting from 0 for the first subtitle track).
+
+    `track_language` adjusts the meaning of `track.  If given, only
+    consider tracks matching that language.  Select the relevant track
+    from those.  0 means first, and -1 means last.
+    """
+    # Figure out which track we want
+    cmd = [
+        'ffprobe', 'file:'+str(video),
+        '-print_format', 'json', '-show_format', '-show_streams',
+        ]
+    p = subprocess.run(cmd, stdout=subprocess.PIPE, check=True)
+    data = json.loads(p.stdout.decode())
+    data = data['streams']
+
+    if isinstance(track, str) and ':' in track:
+        track_language, track = track.split(':', 1)
+    track = int(track)
+    if track_language:
+        data = [x for x in data if x['codec_type']=='subtitle' and x['tags']['language'] == track_language]
+        try:
+            track = data[track]['index']
+        except IndexError as exc:
+            raise RuntimeError(f"Bad subtitle track/track-lang combination {track} and {track_language} in {video}.  Try ffprobe on the file to see the streams.") from exc
+        track_map = f'0:{track}'
+    else:
+        track_map = f'0:s:{track}'
+
+    # Get the subtitle
     cmd = [
         'ffmpeg',
         '-i', 'file:'+str(video),
-        '-map', f'0:s:{track}', # grab the track we want
+        '-map', track_map, # grab the track we want
         '-f', 'srt',            #output format
         '-loglevel', 'warning',
         '-',                    # output to stdout
@@ -152,11 +188,15 @@ def translate(subs, *, args):
         speaker_re = re.compile(r'((?:\s|^)-)(?=\w)', re.MULTILINE)
         all_subs = [ ]
 
+        # For each subtitle
         for s in subs:
             content = s.content
             print(json.dumps(content))
 
+            # Split it to the different `-` eparated speaker parts
             parts = speaker_re.split(content)
+            # insert ensures that `parts` is a sequence of (`-` delimiter,
+            # text) pairs, even if the first one is empty
             parts.insert(0, '')
             result = [ ]
             for part in batched(parts, n=2):
@@ -164,22 +204,51 @@ def translate(subs, *, args):
                 text = text.replace('\n', ' ')
                 if not text.strip(): continue
 
-                print(repr(text), '->')
+                print(repr(text), '--->')
                 child_stdin.write(json.dumps(text)+'\n')
                 child_stdin.flush()
                 new = json.loads(child_stdout.readline())
-                print('          ->', repr(new))
-                #if i == 0:
-                #    result.append(new)
-                #else:
+                print('          --->', repr(new))
                 result.append(delim+new)
             s.content = '  '.join(result)
             yield s
             all_subs.append(json.dumps(content))
-        #child_stdin.write('\n'.join(all_subs))
-        #child_stdin.close()
-        #out = child_stdout.read()
-        #yield from out.split('\n')
+
+
+def translate_google(srtb):
+
+    subs = list(srt.parse(srtb))
+    for s in subs:
+        s.content = ' '.join(s.content.split('\n'))
+    srtb = srt.compose(subs).encode()
+
+    srtb = srtb.split(b'\n\n')
+    i = 0
+    srtb_new = []
+
+    while i < len(srtb):
+        next = [ ]
+        size = 0
+        while size < 4750 and i < len(srtb):
+            next.append(srtb[i])
+            size += len(srtb[i])
+            i += 1
+        stdin = b'\n\n'.join(next)
+        subprocess.run(['xclip', '-in'], input=stdin, check=True)
+        subprocess.run(['xclip', '-in', '-selection', 'clipboard'], input=stdin, check=True)
+        print(f"Copying {len(stdin)}b... paste into Google Translate")
+
+        while True:
+            time.sleep(1)
+            print("Waiting for you to copy the output translation...")
+            p = subprocess.run(['xclip', '-out', '-selection', 'clipboard'], stdout=subprocess.PIPE, check=True)
+            stdout = p.stdout
+            if stdout != stdin:
+                break
+        print(stdout.decode())
+        srtb_new.append(stdout)
+    srtb_new = b'\n\n'.join(srtb_new)
+    return srtb_new.decode()
 
 
 
@@ -196,8 +265,11 @@ def whisper_auto(args):
         if video.suffixes[-2:] == ['new', 'mkv']:
             print("Skipping .new.mkv video:", video)
             continue
-
-        output = video.with_suffix('.new.mkv')
+        if video.suffixes[-2:-1] == ['.orig']:        # /x/y/name.z.orig.mkv
+            base = video.name.rsplit('.', 2)[0]       # /x/y/name.z
+            output = video.parent / (base+'.new.mkv') # /x/y/name.z.new.mkv
+        else:
+            output = video.with_suffix('.new.mkv')
         srt1 = video.with_suffix(f'.{args.lang}.srt')
         srt2 = video.with_suffix('.qen.srt')
         srtout = video.with_suffix('.mul.srt')
@@ -216,16 +288,29 @@ def whisper_auto(args):
 
         merge_extra = [ ]
         if args.sid_original:
-            srts_orig = srts_from_file(video, args.sid_original)
+            srts_orig = srts_from_file(video, args.sid_original, args.sid_original_lang)
 
             srtout2 = video.with_suffix('.mu2.srt')
             combine(srt.parse(srts_orig), srt2, srtout2, args=args)
             merge_extra.extend(['--language', '0:mul', '--track-name', '0:Whisper qen+orig', srtout2])
 
-            srtout3 = video.with_suffix('.mu3.srt')
-            subs3 = translate(srt.parse(srts_orig), args=args)
-            combine(srt.parse(srts_orig), timeshift(subs3, -.001), srtout3, args=args)
-            merge_extra.extend(['--language', '0:mul',  '--track-name', '0:en(orig)+orig', srtout3])
+            if args.argos:
+                srtout3 = video.with_suffix('.mu3.srt')
+                subs3 = translate(srt.parse(srts_orig), args=args)
+                combine(srt.parse(srts_orig), timeshift(subs3, -.001), srtout3, args=args)
+                merge_extra.extend(['--language', '0:mul',  '--track-name', '0:argos(orig)+orig', srtout3])
+
+            if args.google:
+                srtout_g = video.with_suffix('.qeg.srt')
+                if not srtout_g.exists():
+                    srtb_g = translate_google(srts_orig)
+                    open(srtout_g, 'w').write(srtb_g)
+                else:
+                    srtb_g = open(srtout_g, 'r').read()
+                srtout4 = video.with_suffix('.mu4.srt')
+                combine(srt.parse(srts_orig), timeshift(srt.parse(srtb_g), -.001), srtout4, args=args)
+                merge_extra.extend(['--language', '0:mul', '--track-name', '0:google(orig)+orig', srtout4])
+
 
         cmd = [
             'mkvmerge',
