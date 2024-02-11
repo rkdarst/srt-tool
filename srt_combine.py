@@ -3,6 +3,7 @@
 """Combine srt files and/or generate them with whisper.
 """
 import argparse
+import copy
 import datetime
 import io
 import itertools
@@ -46,6 +47,8 @@ def main():
                          help="Argos translate the original subtitles, requires --sid-original.")
     sp_auto.add_argument('--google', action='store_true',
                          help="Google translate (requires manual interaction), requires --sid-original.")
+    sp_auto.add_argument('--azure', action='store_true',
+                         help="Translate with Azure.  Set AZURE_KEY.")
     sp_auto.set_defaults(auto=True)
 
     sp_single = subparsers.add_parser('simple', help="Transcribe to *.srt (no language code in filename)")
@@ -251,6 +254,42 @@ def translate_google(srtb):
     return srtb_new.decode()
 
 
+def translate_azure(subs):
+
+    key = os.environ['AZURE_KEY']
+    import requests
+    #class AzureAuth(requsets.auth.AuthBase):
+    #    def __init__(self, key):
+    #        self.key = key
+    def auth(r): #def __call__(self, r):
+        r.headers['Ocp-Apim-Subscription-Key'] = key
+        # location required if you're using a multi-service or regional (not global) resource.
+        #r.headers['Ocp-Apim-Subscription-Region'] = location
+        r.headers['Content-type'] = 'application/json'
+        #r.headers['X-ClientTraceId'] = str(uuid.uuid4())
+        return r
+
+    subs = copy.deepcopy(list(subs))
+    chars = 0
+    for i, s in enumerate(subs):
+        content = ' '.join(s.content.split('\n'))
+        chars += len(content)
+        r = requests.post(
+            'https://api.cognitive.microsofttranslator.com/translate',
+            params={'api-version': '3.0', 'from': 'fi', 'to': ['en']},
+            json=[{'text': content}],
+            auth=auth
+            )
+        new = r.json()[0]['translations'][0]['text']
+        s.content = new
+        print(f"Azure: {content!r} → {new!r}")
+        #if i > 10:
+        #    break
+    print(f"Azure: Translated {chars} characters")
+    return subs
+
+
+
 
 def whisper_auto(args):
     """Automatically run translate/transcribe/combine to new file.
@@ -310,6 +349,18 @@ def whisper_auto(args):
                 srtout4 = video.with_suffix('.mu4.srt')
                 combine(srt.parse(srts_orig), timeshift(srt.parse(srtb_g), -.001), srtout4, args=args)
                 merge_extra.extend(['--language', '0:mul', '--track-name', '0:google(orig)+orig', srtout4])
+
+            if args.azure:
+                srtout_z = video.with_suffix('.qez.srt')
+                if not srtout_z.exists():
+                    subs_z = translate_azure(srt.parse(srts_orig))
+                    srtb_z = srt.compose(subs_z)
+                    open(srtout_z, 'w').write(srtb_z)
+                else:
+                    subs_z = srt.parse(open(srtout_z, 'r').read())
+                srtout5 = video.with_suffix('.mu5.srt')
+                combine(srt.parse(srts_orig), timeshift(subs_z, -.001), srtout5, args=args)
+                merge_extra.extend(['--language', '0:mul', '--track-name', '0:azure(orig)+orig', srtout5])
 
 
         cmd = [
