@@ -280,6 +280,7 @@ def translate_azure(subs):
             json=[{'text': content}],
             auth=auth
             )
+        r.raise_for_status()
         new = r.json()[0]['translations'][0]['text']
         s.content = new
         print(f"Azure: {content!r} → {new!r}")
