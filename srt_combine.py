@@ -337,7 +337,7 @@ def whisper_auto(args):
             if args.argos:
                 srtout3 = video.with_suffix('.mu3.srt')
                 subs3 = translate(srt.parse(srts_orig), args=args)
-                combine(srt.parse(srts_orig), timeshift(subs3, -.001), srtout3, args=args)
+                combine(remove_newlines(srt.parse(srts_orig)), timeshift(subs3, -.001), srtout3, args=args)
                 merge_extra.extend(['--language', '0:mul',  '--track-name', '0:argos(orig)+orig', srtout3])
 
             if args.google:
@@ -348,7 +348,7 @@ def whisper_auto(args):
                 else:
                     srtb_g = open(srtout_g, 'r').read()
                 srtout4 = video.with_suffix('.mu4.srt')
-                combine(srt.parse(srts_orig), timeshift(srt.parse(srtb_g), -.001), srtout4, args=args)
+                combine(remove_newlines(srt.parse(srts_orig)), timeshift(srt.parse(srtb_g), -.001), srtout4, args=args)
                 merge_extra.extend(['--language', '0:mul', '--track-name', '0:google(orig)+orig', srtout4])
 
             if args.azure:
@@ -360,7 +360,7 @@ def whisper_auto(args):
                 else:
                     subs_z = srt.parse(open(srtout_z, 'r').read())
                 srtout5 = video.with_suffix('.mu5.srt')
-                combine(srt.parse(srts_orig), timeshift(subs_z, -.001), srtout5, args=args)
+                combine(remove_newlines(srt.parse(srts_orig)), timeshift(subs_z, -.001), srtout5, args=args)
                 merge_extra.extend(['--language', '0:mul', '--track-name', '0:azure(orig)+orig', srtout5])
 
 
@@ -391,4 +391,12 @@ def combine(subs1, subs2, subsout, *, args):
     if isinstance(subsout, (str, Path)):
         open(subsout, 'w', encoding='utf8').write(srt.compose(subsnew))
     else:
-        return srt.compose(subsnew)
+        return subsnew
+
+
+def remove_newlines(subs):
+    """Remove newlines in subtitles"""
+    subs = copy.deepcopy(list(subs))
+    for s in subs:
+        s.content = ' '.join(s.content.split('\n'))
+    return subs
