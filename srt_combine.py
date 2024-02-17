@@ -218,40 +218,85 @@ def translate(subs, *, args):
             all_subs.append(json.dumps(content))
 
 
-def translate_google(srtb):
+def translate_google(subs):
 
-    subs = list(srt.parse(srtb))
-    for s in subs:
-        s.content = ' '.join(s.content.split('\n'))
-    srtb = srt.compose(subs).encode()
+    #subs = list(srt.parse(srtb))
+    #for s in subs:
+    #    s.content = ' '.join(s.content.split('\n'))
+    #srtb = srt.compose(subs).encode()
 
-    srtb = srtb.split(b'\n\n')
+    #srtb = srtb.split(b'\n\n')
+    #i = 0
+    #srtb_new = []
+
+    subs = copy.deepcopy(list(subs))
+    submap = {i: s.content.replace('\n', ' ') for i,s in enumerate(subs) }
+    print(submap)
     i = 0
-    srtb_new = []
 
-    while i < len(srtb):
+    while i < len(submap):
+        #import pdb ; pdb.set_trace()
         next = [ ]
         size = 0
-        while size < 4750 and i < len(srtb):
-            next.append(srtb[i])
-            size += len(srtb[i])
+        while size < 4950 and i < len(submap):
+            #print(s)
+            line = f"{i}→ {submap[i]}"
+            next.append(line)
+            size += len(line)+1  # +1 for newline
             i += 1
-        stdin = b'\n\n'.join(next)
-        subprocess.run(['xclip', '-in'], input=stdin, check=True)
-        subprocess.run(['xclip', '-in', '-selection', 'clipboard'], input=stdin, check=True)
-        print(f"Copying {len(stdin)}b... paste into Google Translate")
-
+        stdin = '\n'.join(next)
+        #print(stdin)
         while True:
-            time.sleep(1)
-            print("Waiting for you to copy the output translation...")
-            p = subprocess.run(['xclip', '-out', '-selection', 'clipboard'], stdout=subprocess.PIPE, check=True)
-            stdout = p.stdout
-            if stdout != stdin:
+            subprocess.run(['xclip', '-in'], input=stdin.encode(), check=True)
+            subprocess.run(['xclip', '-in', '-selection', 'clipboard'], input=stdin.encode(), check=True)
+            print(f"Copying {len(stdin)}b... paste into Google Translate")
+
+
+            while True:
+                time.sleep(1)
+                print("Waiting for you to copy the output translation...")
+                p = subprocess.run(['xclip', '-out', '-selection', 'clipboard'], stdout=subprocess.PIPE, check=True)
+                stdout = p.stdout.decode()
+                if stdout != stdin:
+                    break
+
+            try:
+                for line in stdout.split('\n'):
+                    newi, newtext = line.split('→', 1)
+                    submap[int(newi)] = newtext.strip()
                 break
-        print(stdout.decode())
-        srtb_new.append(stdout)
-    srtb_new = b'\n\n'.join(srtb_new)
-    return srtb_new.decode()
+            except Exception as exc:
+                import traceback
+                traceback.print_exc()
+                print(exc)
+                print("failure parsing, try agani")
+                continue
+
+    return subs
+
+    #while i < len(srtb):
+    #    next = [ ]
+    #    size = 0
+    #    while size < 4750 and i < len(srtb):
+    #        next.append(srtb[i])
+    #        size += len(srtb[i])
+    #        i += 1
+    #    stdin = b'\n\n'.join(next)
+    #    subprocess.run(['xclip', '-in'], input=stdin, check=True)
+    #    subprocess.run(['xclip', '-in', '-selection', 'clipboard'], input=stdin, check=True)
+    #    print(f"Copying {len(stdin)}b... paste into Google Translate")
+    #
+    #    while True:
+    #        time.sleep(1)
+    #        print("Waiting for you to copy the output translation...")
+    #        p = subprocess.run(['xclip', '-out', '-selection', 'clipboard'], stdout=subprocess.PIPE, check=True)
+    #        stdout = p.stdout
+    #        if stdout != stdin:
+    #            break
+    #    print(stdout.decode())
+    #    srtb_new.append(stdout)
+    #srtb_new = b'\n\n'.join(srtb_new)
+    #return srtb_new.decode()
 
 
 def translate_azure(subs):
@@ -343,7 +388,7 @@ def whisper_auto(args):
             if args.google:
                 srtout_g = video.with_suffix('.qeg.srt')
                 if not srtout_g.exists():
-                    srtb_g = translate_google(srts_orig)
+                    srtb_g = srt.compose(translate_google(srt.parse(srts_orig)))
                     open(srtout_g, 'w').write(srtb_g)
                 else:
                     srtb_g = open(srtout_g, 'r').read()
