@@ -230,8 +230,7 @@ def translate_google(subs):
     #srtb_new = []
 
     subs = copy.deepcopy(list(subs))
-    submap = {i: s.content.replace('\n', ' ') for i,s in enumerate(subs) }
-    print(submap)
+    submap = { i: s.content.replace('\n', ' ') for i,s in enumerate(subs) }
     i = 0
 
     while i < len(submap):
@@ -263,7 +262,7 @@ def translate_google(subs):
             try:
                 for line in stdout.split('\n'):
                     newi, newtext = line.split('→', 1)
-                    submap[int(newi)] = newtext.strip()
+                    subs[int(newi)].content = newtext.strip()
                 break
             except Exception as exc:
                 import traceback
