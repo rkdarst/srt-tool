@@ -3,10 +3,10 @@ requires = ["flit_core >=3.2,<4"]
 build-backend = "flit_core.buildapi"
 
 [tool.flit.module]
-name = "srt_combine"
+name = "srt_tool"
 
 [project]
-name = "srt-combine"
+name = "srt-tool"
 authors = [{name = "Richard Darst"}]
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -24,11 +24,11 @@ dependencies = [
 #]
 
 [project.scripts]
-    srt-combine = "srt_combine:main"
+    srt-tool = "srt_tool:main"
 
 [project.urls]
-Repository = "https://example.com/"
-Documentation = "https://example.com/"
+Repository = "https://github.com/rkdarst/srt-tool/"
+#Documentation = "https://example.com/"
 
 
 # https://flit.pypa.io/en/latest/upload.html
