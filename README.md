@@ -62,6 +62,11 @@ haven't been used in a while.  Expect to have to read or change code
 (but if it's useful, ask me to formalize it some).
 
 
+## Test data
+
+* reittidemo (CC-0): http://urn.fi/urn:nbn:fi:lb-2020112930
+
+
 ## See also
 
 * [mpv](https://mpv.io/) has a `--secondary-sid=N` option that can display a

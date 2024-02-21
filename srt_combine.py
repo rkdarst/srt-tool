@@ -34,6 +34,7 @@ def main():
     parser.add_argument('--color', default='#87cefa', help='Default %(default)s')
     parser.add_argument('--lang', default='fi', help='Default %(default)s')
     parser.add_argument('--model', default='large-v3', help='Default %(default)s')
+    parser.add_argument('--output', help='Override output file')
 
     subparsers = parser.add_subparsers()
 
@@ -47,6 +48,8 @@ def main():
                          help="Argos translate the original subtitles, requires --sid-original.")
     sp_auto.add_argument('--google', action='store_true',
                          help="Google translate (requires manual interaction), requires --sid-original.")
+    sp_auto.add_argument('--google-whisper', action='store_true',
+                         help="Google translate of whisper subtitles.")
     sp_auto.add_argument('--azure', action='store_true',
                          help="Translate with Azure.  Set AZURE_KEY.")
     sp_auto.set_defaults(auto=True)
@@ -354,35 +357,47 @@ def whisper_auto(args):
             output = video.parent / (base+'.new.mkv') # /x/y/name.z.new.mkv
         else:
             output = video.with_suffix('.new.mkv')
+
+        # Do the base whispers
         srt1 = video.with_suffix(f'.{args.lang}.srt')
         srt2 = video.with_suffix('.qen.srt')
         srtout = video.with_suffix('.mul.srt')
+        merge_extra = [ ]
         if output.exists() and not args.re_combine:
             continue
-        if not output.exists():
-            if not srt1.exists(): whisper(video, srt1, args=args) # transcribe
-            if not srt2.exists(): whisper(video, srt2, translate=True, args=args) # translate
+        if not srt1.exists():
+            whisper(video, srt1, args=args)                 # transcribe
+        if not srt2.exists():
+            whisper(video, srt2, translate=True, args=args) # translate
         combine(srt1,
                 srt2,
                 srtout,
                 args=args)
 
-        if args.no_new_mkv:
-            return
+        if args.google_whisper:
+            srtout_gw = video.with_suffix('.qeh.srt')
+            if not srtout_gw.exists():
+                srtb_gw = srt.compose(translate_google(srt.parse(open(srt1).read())))
+                open(srtout_gw, 'w').write(srtb_gw)
+            else:
+                srtb_gw = open(srtout_gw, 'r').read()
+            srtout6 = video.with_suffix('.mu6.srt')
+            combine(remove_newlines(srt.parse(open(srt1).read())), timeshift(srt.parse(srtb_gw), -.001), srtout6, args=args)
+            merge_extra.extend(['--language', '0:mul', '--track-name', f'0:whisper_{args.lang} + google(whisper{args.lang})', srtout6])
 
-        merge_extra = [ ]
+
         if args.sid_original:
             srts_orig = srts_from_file(video, args.sid_original, args.sid_original_lang)
 
             srtout2 = video.with_suffix('.mu2.srt')
             combine(srt.parse(srts_orig), srt2, srtout2, args=args)
-            merge_extra.extend(['--language', '0:mul', '--track-name', '0:Whisper qen+orig', srtout2])
+            merge_extra.extend(['--language', '0:mul', '--track-name', '0:orig + whisper_en(orig)', srtout2])
 
             if args.argos:
                 srtout3 = video.with_suffix('.mu3.srt')
                 subs3 = translate(srt.parse(srts_orig), args=args)
                 combine(remove_newlines(srt.parse(srts_orig)), timeshift(subs3, -.001), srtout3, args=args)
-                merge_extra.extend(['--language', '0:mul',  '--track-name', '0:argos(orig)+orig', srtout3])
+                merge_extra.extend(['--language', '0:mul',  '--track-name', '0:orig + argos(orig)', srtout3])
 
             if args.google:
                 srtout_g = video.with_suffix('.qeg.srt')
@@ -393,7 +408,7 @@ def whisper_auto(args):
                     srtb_g = open(srtout_g, 'r').read()
                 srtout4 = video.with_suffix('.mu4.srt')
                 combine(remove_newlines(srt.parse(srts_orig)), timeshift(srt.parse(srtb_g), -.001), srtout4, args=args)
-                merge_extra.extend(['--language', '0:mul', '--track-name', '0:google(orig)+orig', srtout4])
+                merge_extra.extend(['--language', '0:mul', '--track-name', '0:orig + google(orig)', srtout4])
 
             if args.azure:
                 srtout_z = video.with_suffix('.qez.srt')
@@ -405,8 +420,11 @@ def whisper_auto(args):
                     subs_z = srt.parse(open(srtout_z, 'r').read())
                 srtout5 = video.with_suffix('.mu5.srt')
                 combine(remove_newlines(srt.parse(srts_orig)), timeshift(subs_z, -.001), srtout5, args=args)
-                merge_extra.extend(['--language', '0:mul', '--track-name', '0:azure(orig)+orig', srtout5])
+                merge_extra.extend(['--language', '0:mul', '--track-name', '0:orig + azure(orig)', srtout5])
 
+        # If we don't want to combine to .new.mkv, return now
+        if args.no_new_mkv:
+            return
 
         cmd = [
             'mkvmerge',
