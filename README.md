@@ -14,6 +14,8 @@ many different cases:
 Example: (if anyone has a public domain Finnish video sample, I can
 make an example)
 
+![Screenshot of the "argos translate of original" mode, showing both
+Finnash (white) and English (blue) at the same time](testdata/screenshot-1.jpg)
 
 
 ## Installation
