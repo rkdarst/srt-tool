@@ -11,11 +11,11 @@ many different cases:
   translator), Google Translate, or Microsoft Translate (Azure)
 * Do all the above and automatically combine them.
 
-Example: (if anyone has a public domain Finnish video sample, I can
-make an example)
+Example of combined subtitles:
 
 ![Screenshot of the "argos translate of original" mode, showing both
-Finnash (white) and English (blue) at the same time](testdata/screenshot-1.jpg)
+Finnish (white) and English (blue) at the same time.  Source: CC-0
+example from reittidemo](testdata/screenshot-1.jpg)
 
 
 ## Installation
