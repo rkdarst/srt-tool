@@ -1,13 +1,15 @@
-# srt-combine
+# srt-tool
 
-Originally, this combined two subtitle files into one, coloring one of
-the subtitles.  The point is easy multi-lingual subtitles for use in
-learning languages.
-
-But then it grew where it can run Whisper automatically to get those
-subtitles.  Then it started to run whisper as a general purpose
-wrapper (since its command line arguments are a bit... annoying?  Now
-it's my general Whisper wrapper.
+This does many operations on subtitles, originally intended for
+language learning, but now it has many modes that could be useful in
+many different cases:
+* Combine two srt files into one, coloring one of them.  The original
+  use was (original language, translated) at the same time.
+* Run Whisper on original files and get videos (with easier to
+  remember arguments)
+* Send subtitles through Argos (a locally installable open-source
+  translator), Google Translate, or Microsoft Translate (Azure)
+* Do all the above and automatically combine them.
 
 Example: (if anyone has a public domain Finnish video sample, I can
 make an example)
@@ -29,42 +31,106 @@ useful for my use case).
 
 Currently Whisper arguments are hard-coded.
 
+TODO: test on more diverse systems and fix dependency handling.
+
 
 
 ## Usage
 
-`srt-combined` with the following options:
+There are many different modes.  There is good `--help` for each mode.
+Each is run via
+```console
+$ srt-tool [common-args] SUBCOMMAND [args]
+```
 
-* `auto VIDEO.xxx`: Run whisper to transcribe in `--lang`, run whisper
-  to translate to `en`, combine the srt files, create a new
-  `VIDEO.new.mkv` video file with all of them (unless you give
-  `--no-new-mkv`).  It leaves all the intermediate files.  **This is
-  what I usually use**
-* `simple FILE.xxx`: run whisper on that input, create a `FILE.srt` file
-* `combine SRT1 SRT2 SRTOUT`: combine the first two into the output.
-  The second gets colored.
-* `transcribe FILE.xxx ...`: transcribe to `FILE.{lang}.srt`.  **This
-  is a simple whisper wrapper**
-* `translate FILE.xxx ...`: transcribe to English at `FILE.ex.srt`.
+Commands that take subtitle files can be defined different ways
+* `FILE.srt`: srt files read normally
+* `FILE.video`: Take the first subtitle track from this video
+* `FILE.video:LANG:N`: Take the `N`th subtitle track of language
+  `LANG` from this video.
 
-Common options:
-* `--lang` is input language (default `fi`)
+Videos are specified just as videos.  The argument `--sid-original`
+can specify the "original" subtitle track, either as a number `N`, or
+`LANG:N` for the `N`th track of that language (the first track is 0).
+If `N` is negative, count from the end.
+
+Common arguments:
+* `--lang` specifies original language (default `fi`)
 * `--model=` is whisper model (default `large-v3`)
 
-The code may be more up to date than the above.
+`qen` and in general `qeX` is used as language codes of "transcribed
+English, not original".
+
+
+### srt-tool `simple FILE.xxx`
+
+Run whisper on input file, save to `FILE.srt` file.  This is basically
+an easier way to run Whisper with the default arguments I need without
+remembering them all.
+
+### srt-tool `transcribe FILE.xxx`
+
+Like `simple`, but saves the file to `FILE.LANG.srt`
+
+### srt-tool `translate FILE.xxx`
+
+Like above, but translates to English using Whisper, and saves file to `FILE.LANG.qen`
+
+### srt-tool `combine FILE1.srt FILE2.srt OUTPUT.srt`
+
+Combine the two input srt files, saving to `OUTPUT.srt`.  This
+command, and following ones, can accept any subtitle definition as
+listed above (specifically including the options to automatically
+extract them from a video)
+
+### srt-tool `{argos,google,azure} FILE.srt OUTPUT.srt`
+
+Run the respective translation service on the srt file.  Remember that
+this can automatically extract them form a video.
+
+* `argos`: An open-source, locally installable translation engine.
+  It's OK.  Requires extra setup that isn't described here.
+* `google`: Google Translate.  It doesn't use the API, instead, it
+  copies it to the clipboard, which you need to past to Google
+  Translate yourself, and then copy the output.  It repeats until it's
+  done it all (5000 chars at a time).
+* `azure`: Microsoft Translator.  This does use the Azure API and
+  needs an API token to be defined in the environment variable
+  `AZURE_KEY`.
+
+### srt-tool `auto VIDEO.xxx`
+
+Does all of the above automatically, saves to `FILE.new.mkv`.  (if the
+file ends with `.orig.mkv`, replace that `orig` with `new`.  This will
+create a bunch of temporary `.srt` files that are next to the video,
+which allow the final output to be re-generated without re-computing
+everything, if you need to add more options or something.
+
+What happens is controlled by lots of options.  in general, lowercase
+is "based on the original" and upper case is "done ":
+
+* `-w`: Whisper transcription
+* `-W`: Whisper translation
+* if `-w -W`, then also save a combined file of both of them.
+* `-r` or `-R`: aRgos translate on original/whisper transcribed.
+* `-g` or `-G`: Google translate on original/whisper transcribed
+* `-z` or `-Z`: aZure transcription on original/whisper transcribed
 
 
 
 ## Status and development
 
 One person's toy project.  Parts may be randomly broken if they
-haven't been used in a while.  Expect to have to read or change code
+haven't been used in a while.  Expect to have to read or change code,
+but there has been one big refactoring so it's likely to be maintainable now.
+If this is useful for you, ask me and I can formalize it more.
 (but if it's useful, ask me to formalize it some).
 
 
 ## Test data
 
 * reittidemo (CC-0): http://urn.fi/urn:nbn:fi:lb-2020112930
+
 
 
 ## See also
