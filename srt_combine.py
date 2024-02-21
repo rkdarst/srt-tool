@@ -5,6 +5,7 @@
 import argparse
 import copy
 import datetime
+import functools
 import io
 import itertools
 import json
@@ -13,6 +14,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -34,9 +36,34 @@ def main():
     parser.add_argument('--color', default='#87cefa', help='Default %(default)s')
     parser.add_argument('--lang', default='fi', help='Default %(default)s')
     parser.add_argument('--model', default='large-v3', help='Default %(default)s')
-    parser.add_argument('--output', help='Override output file')
+    parser.add_argument('--output', type=Path, help='Override output file')
 
     subparsers = parser.add_subparsers()
+
+    sp_single = subparsers.add_parser('simple', help="Whisper transcribe to *.srt (no language code in filename)")
+    sp_single.add_argument('video', nargs='+', type=Path)
+    sp_single.set_defaults(simple=True)
+
+    sp_trs = subparsers.add_parser('transcribe', help='transcribe to *.LANG.srt')
+    sp_trs.add_argument('video', nargs='+', type=Path)
+    sp_trs.set_defaults(whisper_transcribe=True)
+
+    sp_trl = subparsers.add_parser('translate', help='translate to (english) *.ex.srt')
+    sp_trl.add_argument('video', nargs='+', type=Path)
+    sp_trs.set_defaults(whisper_translate=True)
+
+    sp_combine = subparsers.add_parser('combine', help='combine two srt files, coloring the second one')
+    sp_combine.add_argument('srt1', type=Path)
+    sp_combine.add_argument('srt2', type=Path)
+    sp_combine.add_argument('srtout', type=Path)
+    sp_combine.set_defaults(combine=True)
+
+    for name, transfunc in [('argos', translate_argos), ('google', translate_google), ('azure', translate_azure)]:
+        sp = subparsers.add_parser(name, help=f'Translate srt with {name}')
+        sp.add_argument('srt', type=Path)
+        sp.add_argument('srtout', type=Path)
+        sp.set_defaults(translate=True, translate_func=transfunc)
+
 
     sp_auto = subparsers.add_parser('auto', help="Transcribe, translate, and combine subs, make new .mkv file.  If extension is .orig.mkv, output is .new.mkv, otherwise it is .new.mkv replacing the last portion.")
     sp_auto.add_argument('video', nargs='+', type=Path)
@@ -44,32 +71,18 @@ def main():
     sp_auto.add_argument('--re-combine', action='store_true', help="Recombine to .xx.srt, .new.mkv even if they already exist.")
     sp_auto.add_argument('--sid-original', help="Original subtitle id for translation.  If given without --sid-original-lang, this is the subtitle track number.  If given with that option, it is relative to all subtitles of thet language (and can be negative to say 'the last one'")
     sp_auto.add_argument('--sid-original-lang', help="Original subtitle id for translation.  Use ffprobe to see what the options are.")
-    sp_auto.add_argument('--argos', action='store_true', default=False,
-                         help="Argos translate the original subtitles, requires --sid-original.")
-    sp_auto.add_argument('--google', action='store_true',
-                         help="Google translate (requires manual interaction), requires --sid-original.")
-    sp_auto.add_argument('--google-whisper', action='store_true',
-                         help="Google translate of whisper subtitles.")
-    sp_auto.add_argument('--azure', action='store_true',
-                         help="Translate with Azure.  Set AZURE_KEY.")
+    sp_auto.add_argument('-w', '--whisper', action='store_true', help="Transcribe with Whisper.")
+    sp_auto.add_argument('-W', '--whisper-trans', action='store_true', help="Translate with Whisper.")
+    for name, letter, extra in [
+        ('argos', 'r', ''),
+        ('google', 'g', ', requires manual interaction to do the translation'),
+        ('azure', 'z', ''),
+        ]:
+        sp_auto.add_argument(f'-{letter}', f'--{name}', action='store_true',
+                             help=f"{name.title()} translate{extra} (set --sid-original)")
+        sp_auto.add_argument(f'-{letter.upper()}', f'--{name}-whisper', action='store_true',
+                             help=f"{name.title()} translate of whisper subtitles.")
     sp_auto.set_defaults(auto=True)
-
-    sp_single = subparsers.add_parser('simple', help="Transcribe to *.srt (no language code in filename)")
-    sp_single.add_argument('video', nargs='+', type=Path)
-    sp_single.set_defaults(simple=True)
-
-    sp_combine = subparsers.add_parser('combine', help='combine two srt files, coloring the second one')
-    sp_combine.add_argument('srt1', type=Path)
-    sp_combine.add_argument('srt2', type=Path)
-    sp_combine.add_argument('srtout', type=Path)
-
-    sp_trs = subparsers.add_parser('transcribe', help='transcribe to *.LANG.srt')
-    sp_trs.add_argument('video', nargs='+', type=Path)
-    sp_trs.set_defaults(transcribe=True)
-
-    sp_trl = subparsers.add_parser('translate', help='translate to (english) *.ex.srt')
-    sp_trl.add_argument('video', nargs='+', type=Path)
-    sp_trs.set_defaults(translate=True)
 
     args = parser.parse_args()
     print(args)
@@ -77,28 +90,42 @@ def main():
     # Simple mode
     if hasattr(args, 'simple'):
         for video in args.video:
-            whisper(video, output=video.with_suffix('.srt'), args=args)
-    # Combine
-    elif hasattr(args, 'srtout'):
-        combine(args.srt1, args.srt2, args.srtout, args=args)
+            subs = whisper(video, args=args)
+            output = args.output or video.with_suffix('.srt')
+            output.write_text(srt.compose(subs))
     # Transcribe
-    elif hasattr(args, 'transcribe'):
+    elif hasattr(args, 'whisper_transcribe'):
         for video in args.video:
-            whisper(video, output=video.with_suffix(f'.{args.lang}.srt'), args=args)
-    # Translate
+            subs = whisper(video, args=args)
+            output = args.output or video.with_suffix(f'.{args.lang}.srt')
+            output.write_text(srt.compose(subs))
+    # Whisper-translate
+    elif hasattr(args, 'whisper_translate'):
+        for video in args.video:
+            subs = whisper(video, translate=True, args=args)
+            output = args.output or video.with_suffix('.qen.srt')
+            output.write_text(srt.compose(subs))
+    # Combine
+    elif hasattr(args, 'combine'):
+        subsnew = combine(read_subs(args.srt1), read_subs(args.srt2), args=args)
+        args.srtout.write_text(srt.compose(subsnew))
+    # Translate (via any method)
     elif hasattr(args, 'translate'):
-        for video in args.video:
-            whisper(video, output=video.with_suffix('.qen.srt'), translate=True, args=args)
+        subs = read_subs(args.srt)
+        subs = args.translate_func(subs, args=args)
+        args.srtout.write_text(srt.compose(subs))
+
     # Default = auto: trs + trl + combine + make new mkv
+    elif hasattr(args, 'auto'):
+        for video in args.video:
+            whisper_auto(video, args=args)
     else:
-        whisper_auto(args=args)
+        print("No action specified")
+        sys.exit(1)
 
 
-
-def whisper(video, output, translate=False, *, args):
-    """Run whisper with specifid input/output/arguments."""
-    if Path(output).exists():
-        return
+def whisper(video, translate=False, *, args):
+    """Run whisper with specifid input/output/arguments, return subs."""
     with tempfile.TemporaryDirectory(prefix='whisper-') as tmpdir:
         cmd = [
             'whisper-ctranslate2',
@@ -112,8 +139,8 @@ def whisper(video, output, translate=False, *, args):
             ]
         subprocess.run(cmd, check=True)
         print(tuple(Path(tmpdir).iterdir()))
-        shutil.copyfile(Path(tmpdir)/(Path('file:'+str(video)).stem+'.srt'),
-                        output)
+        srtout = Path(tmpdir)/(Path('file:'+str(video)).stem+'.srt')
+        return list(srt.parse(open(srtout)))
 
 
 
@@ -125,19 +152,48 @@ def recolor(subs, color):
 
 
 def timeshift(subs, shift=0.001):
+    """Add a given timestamp to all subs."""
+    subs = copy.deepcopy(subs)
     for s in subs:
         s.start += datetime.timedelta(seconds=shift)
         s.end   += datetime.timedelta(seconds=shift)
         yield s
 
+
+
 def batched(iter_, n):
+    """Return batches from an iterator.  itertools.batched but for older Python."""
     i = 0
     while i < len(iter_):
         yield iter_[i:i+n]
         i += n
 
 
-def srts_from_file(video, track, track_language=None):
+
+def read_subs(filename):
+    """Read a file and get subtitles from it, however it may be.
+
+    If .srt: parse the subs.
+
+    If video: get first track.  If it ends in :LANG:N, then return that respective one."""
+
+    video_re = re.compile(r':([a-zA-Z]+):([0-9]+)$')
+    filename = Path(filename)
+    # .srt files: read directly and parse
+    if filename.suffix == '.srt':
+        return list(srt.parse(filename.read_text()))
+    # Ends in `:LANG:ID` : extract the specified track from it
+    if video_re.search(str(filename)):
+        m = video_re.search(str(filename))
+        lang, track = m.group(1), int(m.group(2))
+        filename = Path(str(filename)[:m.start()])
+        return subs_from_file(filename, track=track, track_language=lang)
+    # Return the first subtitle track
+    return subs_from_file(filename, track=0)
+
+
+
+def subs_from_file(video, track, track_language=None):
     """Grab srt subtitles from a file.
 
     `track` is the subtitle track ID (starting from 0 for the first subtitle track).
@@ -148,22 +204,28 @@ def srts_from_file(video, track, track_language=None):
     """
     # Figure out which track we want
     cmd = [
-        'ffprobe', 'file:'+str(video),
+        'ffprobe', 'file:'+str(video), '-loglevel', 'warning',
         '-print_format', 'json', '-show_format', '-show_streams',
         ]
     p = subprocess.run(cmd, stdout=subprocess.PIPE, check=True)
     data = json.loads(p.stdout.decode())
-    data = data['streams']
+    streams = data['streams']
 
     if isinstance(track, str) and ':' in track:
         track_language, track = track.split(':', 1)
     track = int(track)
+    # If a language is specificed, take index only from ones in that language
     if track_language:
-        data = [x for x in data if x['codec_type']=='subtitle' and x['tags']['language'] == track_language]
+        data = [x for x in streams if x['codec_type']=='subtitle' and x['tags']['language'] == track_language]
         try:
             track = data[track]['index']
-        except IndexError as exc:
-            raise RuntimeError(f"Bad subtitle track/track-lang combination {track} and {track_language} in {video}.  Try ffprobe on the file to see the streams.") from exc
+        except IndexError:
+            def filterdict(x):
+                new = {k: v for k,v in x.items() if k in {'index', 'codec_type', }}
+                new['language'] = x['tags']['language']
+                return new
+            data = [filterdict(x) for x in streams if x['codec_type']=='subtitle']
+            raise RuntimeError(f"Bad subtitle track/track-lang combination {track} and {track_language} in {video}.  Try ffprobe on the file or see here: ({data})")
         track_map = f'0:{track}'
     else:
         track_map = f'0:s:{track}'
@@ -179,11 +241,12 @@ def srts_from_file(video, track, track_language=None):
     ]
     p = subprocess.run(cmd, stdout=subprocess.PIPE, check=True)
     #print(p.stdout)
-    return p.stdout.decode()
+    return list(srt.parse(p.stdout.decode()))
 
 
 
-def translate(subs, *, args):
+def translate_argos(subs, *, args):
+    """Translate through the Argos open-source translator"""
     cmd = [
         '/home/rkdarst/sys/argostranslate/argospipe.py',
         args.lang,
@@ -192,7 +255,7 @@ def translate(subs, *, args):
     with subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, encoding='utf8') as p:
         (child_stdin, child_stdout) = (p.stdin, p.stdout)
         speaker_re = re.compile(r'((?:\s|^)-)(?=\w)', re.MULTILINE)
-        all_subs = [ ]
+        subs = copy.deepcopy(subs)
 
         # For each subtitle
         for s in subs:
@@ -217,20 +280,10 @@ def translate(subs, *, args):
                 print('          --->', repr(new))
                 result.append(delim+new)
             s.content = '  '.join(result)
-            yield s
-            all_subs.append(json.dumps(content))
+        return subs
 
-
-def translate_google(subs):
-
-    #subs = list(srt.parse(srtb))
-    #for s in subs:
-    #    s.content = ' '.join(s.content.split('\n'))
-    #srtb = srt.compose(subs).encode()
-
-    #srtb = srtb.split(b'\n\n')
-    #i = 0
-    #srtb_new = []
+def translate_google(subs, *, args):
+    """Translate through Google (manual work)"""
 
     subs = copy.deepcopy(list(subs))
     submap = { i: s.content.replace('\n', ' ') for i,s in enumerate(subs) }
@@ -251,7 +304,7 @@ def translate_google(subs):
         while True:
             subprocess.run(['xclip', '-in'], input=stdin.encode(), check=True)
             subprocess.run(['xclip', '-in', '-selection', 'clipboard'], input=stdin.encode(), check=True)
-            print(f"Copying {len(stdin)}b... paste into Google Translate")
+            print(f"Copying {len(stdin)} bytes... paste into Google Translate {args.lang}→en")
 
 
             while True:
@@ -271,44 +324,19 @@ def translate_google(subs):
                 import traceback
                 traceback.print_exc()
                 print(exc)
-                print("failure parsing, try agani")
+                print("failure parsing, try again")
                 continue
 
     return subs
 
-    #while i < len(srtb):
-    #    next = [ ]
-    #    size = 0
-    #    while size < 4750 and i < len(srtb):
-    #        next.append(srtb[i])
-    #        size += len(srtb[i])
-    #        i += 1
-    #    stdin = b'\n\n'.join(next)
-    #    subprocess.run(['xclip', '-in'], input=stdin, check=True)
-    #    subprocess.run(['xclip', '-in', '-selection', 'clipboard'], input=stdin, check=True)
-    #    print(f"Copying {len(stdin)}b... paste into Google Translate")
-    #
-    #    while True:
-    #        time.sleep(1)
-    #        print("Waiting for you to copy the output translation...")
-    #        p = subprocess.run(['xclip', '-out', '-selection', 'clipboard'], stdout=subprocess.PIPE, check=True)
-    #        stdout = p.stdout
-    #        if stdout != stdin:
-    #            break
-    #    print(stdout.decode())
-    #    srtb_new.append(stdout)
-    #srtb_new = b'\n\n'.join(srtb_new)
-    #return srtb_new.decode()
 
 
-def translate_azure(subs):
+def translate_azure(subs, *, args):
+    """Translate through Azure.  Requires API access"""
 
     key = os.environ['AZURE_KEY']
     import requests
-    #class AzureAuth(requsets.auth.AuthBase):
-    #    def __init__(self, key):
-    #        self.key = key
-    def auth(r): #def __call__(self, r):
+    def auth(r):
         r.headers['Ocp-Apim-Subscription-Key'] = key
         # location required if you're using a multi-service or regional (not global) resource.
         #r.headers['Ocp-Apim-Subscription-Region'] = location
@@ -323,7 +351,7 @@ def translate_azure(subs):
         chars += len(content)
         r = requests.post(
             'https://api.cognitive.microsofttranslator.com/translate',
-            params={'api-version': '3.0', 'from': 'fi', 'to': ['en']},
+            params={'api-version': '3.0', 'from': args.lang, 'to': ['en']},
             json=[{'text': content}],
             auth=auth
             )
@@ -339,7 +367,7 @@ def translate_azure(subs):
 
 
 
-def whisper_auto(args):
+def whisper_auto(video, *, args):
     """Automatically run translate/transcribe/combine to new file.
 
     - Whisper transcribe
@@ -348,112 +376,119 @@ def whisper_auto(args):
     - Create a .new.mkv file
     """
 
-    for video in args.video:
-        if video.suffixes[-2:] == ['new', 'mkv']:
-            print("Skipping .new.mkv video:", video)
-            continue
-        if video.suffixes[-2:-1] == ['.orig']:        # /x/y/name.z.orig.mkv
-            base = video.name.rsplit('.', 2)[0]       # /x/y/name.z
-            output = video.parent / (base+'.new.mkv') # /x/y/name.z.new.mkv
-        else:
-            output = video.with_suffix('.new.mkv')
+    if video.suffixes[-2:] == ['new', 'mkv']:
+        print("Skipping .new.mkv video, this has probably already been processed and is a mistaken glob:", video)
+        return
 
-        # Do the base whispers
-        srt1 = video.with_suffix(f'.{args.lang}.srt')
-        srt2 = video.with_suffix('.qen.srt')
-        srtout = video.with_suffix('.mul.srt')
-        merge_extra = [ ]
-        if output.exists() and not args.re_combine:
-            continue
-        if not srt1.exists():
-            whisper(video, srt1, args=args)                 # transcribe
-        if not srt2.exists():
-            whisper(video, srt2, translate=True, args=args) # translate
-        combine(srt1,
-                srt2,
-                srtout,
-                args=args)
-
-        if args.google_whisper:
-            srtout_gw = video.with_suffix('.qeh.srt')
-            if not srtout_gw.exists():
-                srtb_gw = srt.compose(translate_google(srt.parse(open(srt1).read())))
-                open(srtout_gw, 'w').write(srtb_gw)
-            else:
-                srtb_gw = open(srtout_gw, 'r').read()
-            srtout6 = video.with_suffix('.mu6.srt')
-            combine(remove_newlines(srt.parse(open(srt1).read())), timeshift(srt.parse(srtb_gw), -.001), srtout6, args=args)
-            merge_extra.extend(['--language', '0:mul', '--track-name', f'0:whisper_{args.lang} + google(whisper{args.lang})', srtout6])
-
-
-        if args.sid_original:
-            srts_orig = srts_from_file(video, args.sid_original, args.sid_original_lang)
-
-            srtout2 = video.with_suffix('.mu2.srt')
-            combine(srt.parse(srts_orig), srt2, srtout2, args=args)
-            merge_extra.extend(['--language', '0:mul', '--track-name', '0:orig + whisper_en(orig)', srtout2])
-
-            if args.argos:
-                srtout3 = video.with_suffix('.mu3.srt')
-                subs3 = translate(srt.parse(srts_orig), args=args)
-                combine(remove_newlines(srt.parse(srts_orig)), timeshift(subs3, -.001), srtout3, args=args)
-                merge_extra.extend(['--language', '0:mul',  '--track-name', '0:orig + argos(orig)', srtout3])
-
-            if args.google:
-                srtout_g = video.with_suffix('.qeg.srt')
-                if not srtout_g.exists():
-                    srtb_g = srt.compose(translate_google(srt.parse(srts_orig)))
-                    open(srtout_g, 'w').write(srtb_g)
-                else:
-                    srtb_g = open(srtout_g, 'r').read()
-                srtout4 = video.with_suffix('.mu4.srt')
-                combine(remove_newlines(srt.parse(srts_orig)), timeshift(srt.parse(srtb_g), -.001), srtout4, args=args)
-                merge_extra.extend(['--language', '0:mul', '--track-name', '0:orig + google(orig)', srtout4])
-
-            if args.azure:
-                srtout_z = video.with_suffix('.qez.srt')
-                if not srtout_z.exists():
-                    subs_z = translate_azure(srt.parse(srts_orig))
-                    srtb_z = srt.compose(subs_z)
-                    open(srtout_z, 'w').write(srtb_z)
-                else:
-                    subs_z = srt.parse(open(srtout_z, 'r').read())
-                srtout5 = video.with_suffix('.mu5.srt')
-                combine(remove_newlines(srt.parse(srts_orig)), timeshift(subs_z, -.001), srtout5, args=args)
-                merge_extra.extend(['--language', '0:mul', '--track-name', '0:orig + azure(orig)', srtout5])
-
-        # If we don't want to combine to .new.mkv, return now
-        if args.no_new_mkv:
-            return
-
-        cmd = [
-            'mkvmerge',
-            video,
-            '--original-flag', '0',
-            '--language',f'0:{args.lang}', '--track-name', f'0:Whisper {args.lang}',     srt1,
-            '--language', '0:qen',         '--track-name',  '0:Whisper qen',             srt2,
-            '--language', '0:mul',         '--track-name', f'0:Whisper qen+{args.lang}', srtout,
-            *merge_extra,
-            '--output', str(output),
-            ]
-        print(cmd)
-        subprocess.run(cmd, check=True)
-
-
-
-def combine(subs1, subs2, subsout, *, args):
-    """Combine two srt files into one.  The second one gets a color."""
-
-    if isinstance(subs1, (str, Path)):
-        subs1 = srt.parse(open(subs1, encoding='utf8'))
-    if isinstance(subs2, (str, Path)):
-        subs2 = srt.parse(open(subs2, encoding='utf8'))
-    subsnew = srt.sort_and_reindex(itertools.chain(subs1, recolor(subs2, color=args.color)))
-
-    if isinstance(subsout, (str, Path)):
-        open(subsout, 'w', encoding='utf8').write(srt.compose(subsnew))
+    # Find our output base name
+    if video.suffixes[-2:-1] == ['.orig']:        # /x/y/name.z.orig.mkv
+        base = video.name.rsplit('.', 2)[0]       # /x/y/name.z
+        output = video.parent / (base+'.new.mkv') # /x/y/name.z.new.mkv
     else:
-        return subsnew
+        output = video.with_suffix('.new.mkv')
+
+    merge_files = [ ]
+
+    def cache_output(output, regen=False):
+        """Cache output, re-gen only if needed.
+
+        If output already exists: return subs from that output
+        If output doesn't exist: run wrapped function, save to that output, return generated subs."""
+        def tmp(f):
+            if output.exists() and not regen:
+                return list(srt.parse(output.read_text()))
+            else:
+                subs = f()
+                output.write_text(srt.compose(subs))
+                return subs
+        return tmp
+
+    # Whisper
+    if args.whisper:
+        srt_whisper = video.with_suffix(f'.{args.lang}.srt')
+        @cache_output(srt_whisper)
+        def subs_whisper():
+            return whisper(video, args=args)
+        merge_files += ['--language',f'0:{args.lang}', '--track-name', f'0:Whisper {args.lang}',     srt_whisper,]
+
+    # Whisper translate
+    if args.whisper_trans:
+        srt_whisperT = video.with_suffix(f'.qen.srt')
+        @cache_output(srt_whisperT)
+        def subs_whisper_translate():
+            return whisper(video, translate=True, args=args)
+        merge_files += ['--language',f'0:{args.lang}', '--track-name', f'0:Whisper en',     srt_whisperT,]
+
+    # Combine whispers
+    if args.whisper and args.whisper_trans:
+        srt_whisper_C = video.with_suffix('.mul.srt')
+        @cache_output(srt_whisper_C)
+        def subs_whisper_C():
+            return combine(subs_whisper, subs_whisper_translate, args=args)
+        merge_files += ['--language', '0:mul',         '--track-name', f'0:Whisper en+{args.lang}', srt_whisper_C,]
+
+    # Google of whisper
+    for argname, name, srtT, srtC, trans_func in [
+        ('google_whisper', 'google', 'qeG', 'muG', translate_google),
+        ('argos_whisper',  'argos', 'qeR', 'muR', translate_argos),
+        ('azure_whisper',  'azure', 'qeZ', 'muZ', translate_azure),
+        ]:
+        if getattr(args, argname):
+            print(f"Running {name.title()} on Whisper transcription")
+            # pylint: disable=ignore cell-var-from-loop
+            srt_T = video.with_suffix(f'.{srtT}.srt')
+            srt_C = video.with_suffix(f'.{srtC}.srt')
+            @cache_output(srt_T)
+            def subs_T():
+                return trans_func(subs_whisper, args=args)
+            @cache_output(srt_C)
+            def subs_C():
+                return combine(remove_newlines(subs_whisper), timeshift(subs_T, -.001), args=args)
+            merge_files += ['--language', '0:mul', '--track-name', f'0:Whisper {args.lang} + {name}(whisper{args.lang})', srt_C]
+
+    # Translations of original
+    if args.sid_original:
+        subs_orig = subs_from_file(video, args.sid_original, args.sid_original_lang)
+
+        # Google of original
+        for argname, name, srtT, srtC, trans_func in [
+            ('google', 'google', 'qeg', 'mug', translate_google),
+            ('argos',  'argos', 'qer', 'mur', translate_argos),
+            ('azure',  'azure', 'qez', 'muz', translate_azure),
+            ]:
+            if getattr(args, argname):
+                print(f"Running {name.title()} on Whisper transcription")
+                # pylint: disable=ignore cell-var-from-loop
+                srt_t = video.with_suffix(f'.{srtT}.srt')
+                @cache_output(srt_t)
+                def subs_t():
+                    return trans_func(subs_orig, args=args)
+                srt_c = video.with_suffix(f'.{srtC}.srt')
+                @cache_output(srt_c)
+                def subs_c():
+                    return combine(remove_newlines(subs_orig), timeshift(subs_t, -.001), args=args)
+                merge_files += ['--language', '0:mul', '--track-name', f'0:orig + {name}(orig)', srt_c]
+
+    # If we don't want to combine to .new.mkv, return now
+    if args.no_new_mkv:
+        return
+
+    cmd = [
+        'mkvmerge',
+        video,
+        *merge_files,
+        '--output', str(output),
+        ]
+    print(cmd)
+    subprocess.run(cmd, check=True)
+
+
+
+def combine(subs1, subs2, *, args):
+    """Combine two subs into one.  The second one gets a color."""
+
+    subsnew = srt.sort_and_reindex(itertools.chain(subs1, recolor(subs2, color=args.color)))
+    return list(subsnew)
 
 
 def remove_newlines(subs):
