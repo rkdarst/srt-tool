@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-"""Combine srt files and/or generate them with whisper.
+"""Translate/combine srt files and/or generate them with whisper.
 """
 import argparse
 import copy
