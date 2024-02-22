@@ -26,6 +26,7 @@ WHISPER_ARGS = [
     '--compute_type=float32',  # makes it work on CPUs
     '--threads=8',
     '--condition_on_previous_text=False',  # improves quality a bit
+    '--initial_prompt=Hello, and welcome to day 3 of our lecture.  Today, we will discuss varous topics.',
     ]
 
 
