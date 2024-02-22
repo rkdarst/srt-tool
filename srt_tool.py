@@ -30,7 +30,7 @@ WHISPER_ARGS = [
     ]
 
 
-def main():
+def main(args=sys.argv[1:]):
     """Main program logic: split by sub-command.
     """
     parser = argparse.ArgumentParser()
@@ -70,14 +70,14 @@ def main():
     sp_auto.add_argument('video', nargs='+', type=Path)
     sp_auto.add_argument('--no-new-mkv', action='store_true')
     sp_auto.add_argument('--re-combine', action='store_true', help="Recombine to .xx.srt, .new.mkv even if they already exist.")
-    sp_auto.add_argument('--sid-original', help="Original subtitle id for translation.  If given without --sid-original-lang, this is the subtitle track number.  If given with that option, it is relative to all subtitles of thet language (and can be negative to say 'the last one'")
+    sp_auto.add_argument('--sid-original', help="Original subtitle id for translation.  If an integer, it's that subtitle track.  If 'lang:N', then it's the Nth track of that language, and negative integers are allowed (0 in first, -1 is the last one).")
     sp_auto.add_argument('--sid-original-lang', help="Original subtitle id for translation.  Use ffprobe to see what the options are.")
     sp_auto.add_argument('-w', '--whisper', action='store_true', help="Transcribe with Whisper.")
-    sp_auto.add_argument('-W', '--whisper-trans', action='store_true', help="Translate with Whisper.")
+    sp_auto.add_argument('-W', '--whisper-trans', action='store_true', help="Translate (to English) with Whisper.")
     for name, letter, extra in [
-        ('argos', 'r', ''),
-        ('google', 'g', ', requires manual interaction to do the translation'),
-        ('azure', 'z', ''),
+        ('argos', 'r', ', requires other setup of Argos first.'),
+        ('google', 'g', ', requires manual copying/pasting to Google Translate.'),
+        ('azure', 'z', ', requires AZURE_KEY to be set.'),
         ]:
         sp_auto.add_argument(f'-{letter}', f'--{name}', action='store_true',
                              help=f"{name.title()} translate{extra} (set --sid-original)")
@@ -85,7 +85,7 @@ def main():
                              help=f"{name.title()} translate of whisper subtitles.")
     sp_auto.set_defaults(auto=True)
 
-    args = parser.parse_args()
+    args = parser.parse_args(args)
     print(args)
 
     # Simple mode
@@ -133,7 +133,7 @@ def whisper(video, translate=False, *, args):
             'file:'+str(video),
             *WHISPER_ARGS,
             '--output_format=srt',
-            '--language='+args.lang,
+            *(['--language='+args.lang,] if args.lang else []),
             '--model='+args.model,
             *(['--task=translate'] if translate else []),
             '--output_dir='+tmpdir,
