@@ -37,7 +37,7 @@ def main(args=sys.argv[1:]):
     parser.add_argument('--color', default='#87cefa', help='Default %(default)s')
     parser.add_argument('--lang', default='fi', help='Default %(default)s')
     parser.add_argument('--model', default='large-v3', help='Default %(default)s')
-    parser.add_argument('--output', type=Path, help='Override output file')
+    parser.add_argument('--output', type=Path, help="Override output file (for commands that don't have an option for it)")
 
     subparsers = parser.add_subparsers()
 
