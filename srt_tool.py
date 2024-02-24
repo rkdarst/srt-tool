@@ -28,6 +28,7 @@ WHISPER_ARGS = [
     '--condition_on_previous_text=False',  # improves quality a bit
     '--initial_prompt=Hello, and welcome to day 3 of our lecture.  Today, we will discuss varous topics.',
     ]
+IGNORE_TRANSLATIONS = {'.'}
 
 
 def main(args=sys.argv[1:]):
@@ -261,7 +262,9 @@ def translate_argos(subs, *, args):
         # For each subtitle
         for s in subs:
             content = s.content
-            print(json.dumps(content))
+            if content in IGNORE_TRANSLATIONS:
+                continue
+            #print(json.dumps(content))
 
             # Split it to the different `-` eparated speaker parts
             parts = speaker_re.split(content)
@@ -289,6 +292,7 @@ def translate_google(subs, *, args):
     subs = copy.deepcopy(list(subs))
     submap = { i: s.content.replace('\n', ' ') for i,s in enumerate(subs) }
     i = 0
+    SEP_CHAR = '—' #  em dash
 
     while i < len(submap):
         #import pdb ; pdb.set_trace()
@@ -296,9 +300,10 @@ def translate_google(subs, *, args):
         size = 0
         while size < 4950 and i < len(submap):
             #print(s)
-            line = f"{i}→ {submap[i]}"
-            next.append(line)
-            size += len(line)+1  # +1 for newline
+            if submap[i] not in IGNORE_TRANSLATIONS:
+                line = f"{i}{SEP_CHAR} {submap[i]}"
+                next.append(line)
+                size += len(line)+1  # +1 for newline
             i += 1
         stdin = '\n'.join(next)
         #print(stdin)
@@ -318,7 +323,7 @@ def translate_google(subs, *, args):
 
             try:
                 for line in stdout.split('\n'):
-                    newi, newtext = line.split('→', 1)
+                    newi, newtext = line.split(SEP_CHAR, 1)
                     subs[int(newi)].content = newtext.strip()
                 break
             except Exception as exc:
@@ -349,6 +354,8 @@ def translate_azure(subs, *, args):
     chars = 0
     for i, s in enumerate(subs):
         content = ' '.join(s.content.split('\n'))
+        if content in IGNORE_TRANSLATIONS:
+            continue
         chars += len(content)
         r = requests.post(
             'https://api.cognitive.microsofttranslator.com/translate',
