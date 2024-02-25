@@ -35,9 +35,12 @@ def main(args=sys.argv[1:]):
     """Main program logic: split by sub-command.
     """
     parser = argparse.ArgumentParser()
-    parser.add_argument('--color', default='#87cefa', help='Default %(default)s')
-    parser.add_argument('--lang', default='fi', help='Default %(default)s')
-    parser.add_argument('--model', default='large-v3', help='Default %(default)s')
+    parser.add_argument('--color', default='#87cefa', help='Color for second subtitles (default %(default)s)')
+    parser.add_argument('--lang', default='fi', help='Original language of the video, for whisper/translation (default %(default)s)')
+    parser.add_argument('--model', default='large-v3', help='Whisper model (default %(default)s)')
+    #parser.add_argument('--translate-to', default='en', help='Language to translate to, default %(default)s.  '
+    #                                                         'Only for the external translation services, Whisper only '
+    #                                                         'translates to English.')
     parser.add_argument('--output', type=Path, help="Override output file (for commands that don't have an option for it)")
 
     subparsers = parser.add_subparsers()
@@ -72,7 +75,7 @@ def main(args=sys.argv[1:]):
     sp_auto.add_argument('--no-new-mkv', action='store_true')
     sp_auto.add_argument('--re-combine', action='store_true', help="Recombine to .xx.srt, .new.mkv even if they already exist.")
     sp_auto.add_argument('--sid-original', help="Original subtitle id for translation.  If an integer, it's that subtitle track.  If 'lang:N', then it's the Nth track of that language, and negative integers are allowed (0 in first, -1 is the last one).")
-    sp_auto.add_argument('--sid-original-lang', help="Original subtitle id for translation.  Use ffprobe to see what the options are.")
+    #sp_auto.add_argument('--sid-original-lang', help="Original subtitle id for translation.  Use ffprobe to see what the options are.")
     sp_auto.add_argument('-w', '--whisper', action='store_true', help="Transcribe with Whisper.")
     sp_auto.add_argument('-W', '--whisper-trans', action='store_true', help="Translate (to English) with Whisper.")
     for name, letter, extra in [
@@ -398,10 +401,15 @@ def whisper_auto(video, *, args):
     merge_files = [ ]
 
     def cache_output(output, regen=False):
-        """Cache output, re-gen only if needed.
+        """Cache function's output, re-gen only if needed.
+
+        This runs the decorated subtitle generation function and saves
+        it to the respective output (and returns the output).  If the
+        output already exists, read and return that output.
 
         If output already exists: return subs from that output
-        If output doesn't exist: run wrapped function, save to that output, return generated subs."""
+        If output doesn't exist: run wrapped function, save to that output, return generated subs.
+        """
         def tmp(f):
             if output.exists() and not regen:
                 return list(srt.parse(output.read_text()))
@@ -442,6 +450,8 @@ def whisper_auto(video, *, args):
         ('azure_whisper',  'azure', 'qeZ', 'muZ', translate_azure),
         ]:
         if getattr(args, argname):
+            if not args.whisper:
+                raise RuntimeError("To translate whisper subtitles, must make them with --whisper (-w)")
             print(f"Running {name.title()} on Whisper transcription")
             # pylint: disable=ignore cell-var-from-loop
             srt_T = video.with_suffix(f'.{srtT}.srt')
@@ -456,26 +466,28 @@ def whisper_auto(video, *, args):
 
     # Translations of original
     if args.sid_original:
-        subs_orig = subs_from_file(video, args.sid_original, args.sid_original_lang)
+        subs_orig = subs_from_file(video, args.sid_original)
 
-        # Google of original
-        for argname, name, srtT, srtC, trans_func in [
-            ('google', 'google', 'qeg', 'mug', translate_google),
-            ('argos',  'argos', 'qer', 'mur', translate_argos),
-            ('azure',  'azure', 'qez', 'muz', translate_azure),
-            ]:
-            if getattr(args, argname):
-                print(f"Running {name.title()} on Whisper transcription")
-                # pylint: disable=ignore cell-var-from-loop
-                srt_t = video.with_suffix(f'.{srtT}.srt')
-                @cache_output(srt_t)
-                def subs_t():
-                    return trans_func(subs_orig, args=args)
-                srt_c = video.with_suffix(f'.{srtC}.srt')
-                @cache_output(srt_c)
-                def subs_c():
-                    return combine(remove_newlines(subs_orig), timeshift(subs_t, -.001), args=args)
-                merge_files += ['--language', '0:mul', '--track-name', f'0:orig + {name}(orig)', srt_c]
+    # Google of original
+    for argname, name, srtT, srtC, trans_func in [
+        ('google', 'google', 'qeg', 'mug', translate_google),
+        ('argos',  'argos', 'qer', 'mur', translate_argos),
+        ('azure',  'azure', 'qez', 'muz', translate_azure),
+        ]:
+        if getattr(args, argname):
+            if not args.sid_original:
+                raise RuntimeError("To translate original subtitles, they must be defined with --sid-original.")
+            print(f"Running {name.title()} on Whisper transcription")
+            # pylint: disable=ignore cell-var-from-loop
+            srt_t = video.with_suffix(f'.{srtT}.srt')
+            @cache_output(srt_t)
+            def subs_t():
+                return trans_func(subs_orig, args=args)
+            srt_c = video.with_suffix(f'.{srtC}.srt')
+            @cache_output(srt_c)
+            def subs_c():
+                return combine(remove_newlines(subs_orig), timeshift(subs_t, -.001), args=args)
+            merge_files += ['--language', '0:mul', '--track-name', f'0:orig + {name}(orig)', srt_c]
 
     # If we don't want to combine to .new.mkv, return now
     if args.no_new_mkv:
