@@ -9,6 +9,7 @@ import functools
 import io
 import itertools
 import json
+import operator
 import os
 from pathlib import Path
 import re
@@ -35,13 +36,14 @@ def main(args=sys.argv[1:]):
     """Main program logic: split by sub-command.
     """
     parser = argparse.ArgumentParser()
+    parser.add_argument('--output', type=Path, help="Override output file (for commands that don't have an option for it)")
     parser.add_argument('--color', default='#87cefa', help='Color for second subtitles (default %(default)s)')
     parser.add_argument('--lang', default='fi', help='Original language of the video, for whisper/translation (default %(default)s)')
     parser.add_argument('--model', default='large-v3', help='Whisper model (default %(default)s)')
     #parser.add_argument('--translate-to', default='en', help='Language to translate to, default %(default)s.  '
     #                                                         'Only for the external translation services, Whisper only '
     #                                                         'translates to English.')
-    parser.add_argument('--output', type=Path, help="Override output file (for commands that don't have an option for it)")
+    parser.add_argument('--sub-cache', type=Path, help="Subtitle cache file (@/ is relative to each filename)")
 
     subparsers = parser.add_subparsers()
 
@@ -175,6 +177,22 @@ def batched(iter_, n):
 
 
 
+def relative_to(path, **kwargs):
+    """Make a path relative to another, if it starts with one of the keywords
+    """
+    if path.parts[0] in kwargs:
+        return  functools.reduce(operator.truediv, path.parts[1:], kwargs[path.parts[0]])
+    return path
+
+def get_cache(cache_name, video, cache_path):
+    """Get a cache of a certain name."""
+    if not cache_path:
+        return None
+    from sqlitedict import SqliteDict
+    cache_path = relative_to(cache_path, **{'@': video.parent})
+    return SqliteDict(cache_path, tablename=cache_name, encode=json.dumps, decode=json.loads, autocommit=True)
+
+
 def read_subs(filename):
     """Read a file and get subtitles from it, however it may be.
 
@@ -250,7 +268,7 @@ def subs_from_file(video, track, track_language=None):
 
 
 
-def translate_argos(subs, *, args):
+def translate_argos(subs, *, args, cache=None):
     """Translate through the Argos open-source translator"""
     cmd = [
         '/home/rkdarst/sys/argostranslate/argospipe.py',
@@ -261,6 +279,9 @@ def translate_argos(subs, *, args):
         (child_stdin, child_stdout) = (p.stdin, p.stdout)
         speaker_re = re.compile(r'((?:\s|^)-)(?=\w)', re.MULTILINE)
         subs = copy.deepcopy(subs)
+
+        if cache is None:
+            cache = { }
 
         # For each subtitle
         for s in subs:
@@ -280,37 +301,66 @@ def translate_argos(subs, *, args):
                 text = text.replace('\n', ' ')
                 if not text.strip(): continue
 
+                if text in cache:
+                    result.append(delim+new)
+                    continue
+
                 print(repr(text), '--->')
                 child_stdin.write(json.dumps(text)+'\n')
                 child_stdin.flush()
                 new = json.loads(child_stdout.readline())
                 print('          --->', repr(new))
                 result.append(delim+new)
+                cache[text] = new
             s.content = '  '.join(result)
         return subs
 
-def translate_google(subs, *, args):
+def translate_google(subs, *, args, cache=None):
     """Translate through Google (manual work)"""
 
     subs = copy.deepcopy(list(subs))
     submap = { i: s.content.replace('\n', ' ') for i,s in enumerate(subs) }
-    i = 0
     SEP_CHAR = '—' #  em dash
+    CHARS_LIMIT = 4990
+    PLACEHOLDER = object()
+    if cache is None:
+        cache = { }
 
+    seen = set()
+    duplicate_subs = set()
+    for (i, text) in submap.items():
+        if text in seen:
+            duplicate_subs.add(i)
+            continue
+        seen.add(text)
+
+    print('seen:', seen)
+    print('ds:', duplicate_subs)
+
+    i = 0
     while i < len(submap):
         #import pdb ; pdb.set_trace()
         next = [ ]
         size = 0
-        while size < 4950 and i < len(submap):
+        while size < CHARS_LIMIT and i < len(submap):
             #print(s)
-            if submap[i] not in IGNORE_TRANSLATIONS:
-                line = f"{i}{SEP_CHAR} {submap[i]}"
-                next.append(line)
-                size += len(line)+1  # +1 for newline
+            if i in duplicate_subs:
+                i += 1
+                continue
+            if submap[i] in IGNORE_TRANSLATIONS:
+                i += 1
+                continue
+            line = f"{i}{SEP_CHAR} {submap[i]}"
+            if len(line) + 1 + size > CHARS_LIMIT:
+                break
+            next.append(line)
+            size += len(line)+1  # +1 for newline
             i += 1
         stdin = '\n'.join(next)
         #print(stdin)
         while True:
+            if not stdin:
+                break
             subprocess.run(['xclip', '-in'], input=stdin.encode(), check=True)
             subprocess.run(['xclip', '-in', '-selection', 'clipboard'], input=stdin.encode(), check=True)
             print(f"Copying {len(stdin)} bytes... paste into Google Translate {args.lang}→en")
@@ -328,6 +378,7 @@ def translate_google(subs, *, args):
                 for line in stdout.split('\n'):
                     newi, newtext = line.split(SEP_CHAR, 1)
                     subs[int(newi)].content = newtext.strip()
+                    cache[submap[int(newi)]] = newtext
                 break
             except Exception as exc:
                 import traceback
@@ -335,12 +386,14 @@ def translate_google(subs, *, args):
                 print(exc)
                 print("failure parsing, try again")
                 continue
+    for i in duplicate_subs:
+        subs[i].content = cache[submap[i]]
 
     return subs
 
 
 
-def translate_azure(subs, *, args):
+def translate_azure(subs, *, args, cache=None):
     """Translate through Azure.  Requires API access"""
 
     key = os.environ['AZURE_KEY']
@@ -353,11 +406,17 @@ def translate_azure(subs, *, args):
         #r.headers['X-ClientTraceId'] = str(uuid.uuid4())
         return r
 
+    if cache is None:
+        cache = { }
+
     subs = copy.deepcopy(list(subs))
     chars = 0
     for i, s in enumerate(subs):
         content = ' '.join(s.content.split('\n'))
         if content in IGNORE_TRANSLATIONS:
+            continue
+        if content in cache:
+            s.content = cache[content]
             continue
         chars += len(content)
         r = requests.post(
@@ -443,7 +502,7 @@ def whisper_auto(video, *, args):
             return combine(subs_whisper, subs_whisper_translate, args=args)
         merge_files += ['--language', '0:mul',         '--track-name', f'0:Whisper en+{args.lang}', srt_whisper_C,]
 
-    # Google of whisper
+    # Translate of whisper
     for argname, name, srtT, srtC, trans_func in [
         ('google_whisper', 'google', 'qeG', 'muG', translate_google),
         ('argos_whisper',  'argos', 'qeR', 'muR', translate_argos),
@@ -458,7 +517,8 @@ def whisper_auto(video, *, args):
             srt_C = video.with_suffix(f'.{srtC}.srt')
             @cache_output(srt_T)
             def subs_T():
-                return trans_func(subs_whisper, args=args)
+                cache = get_cache(name, video, args.sub_cache)
+                return trans_func(subs_whisper, args=args, cache=cache)
             @cache_output(srt_C)
             def subs_C():
                 return combine(remove_newlines(subs_whisper), timeshift(subs_T, -.001), args=args)
@@ -482,7 +542,8 @@ def whisper_auto(video, *, args):
             srt_t = video.with_suffix(f'.{srtT}.srt')
             @cache_output(srt_t)
             def subs_t():
-                return trans_func(subs_orig, args=args)
+                cache = get_cache(name, video, args.sub_cache)
+                return trans_func(subs_orig, args=args, cache=cache)
             srt_c = video.with_suffix(f'.{srtC}.srt')
             @cache_output(srt_c)
             def subs_c():
