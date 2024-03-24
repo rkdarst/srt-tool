@@ -30,6 +30,7 @@ WHISPER_ARGS = [
     '--initial_prompt=Hello, and welcome to day 3 of our lecture.  Today, we will discuss varous topics.',
     ]
 IGNORE_TRANSLATIONS = {'.'}
+GOOGLE_SEP_CHAR = '-.'
 
 
 def main(args=sys.argv[1:]):
@@ -320,7 +321,6 @@ def translate_google(subs, *, args, cache=None):
 
     subs = copy.deepcopy(list(subs))
     submap = { i: s.content.replace('\n', ' ') for i,s in enumerate(subs) }
-    SEP_CHAR = '—' #  em dash
     CHARS_LIMIT = 4990
     PLACEHOLDER = object()
     if cache is None:
@@ -350,7 +350,7 @@ def translate_google(subs, *, args, cache=None):
             if submap[i] in IGNORE_TRANSLATIONS:
                 i += 1
                 continue
-            line = f"{i}{SEP_CHAR} {submap[i]}"
+            line = f"{i}{GOOGLE_SEP_CHAR} {submap[i]}"
             if len(line) + 1 + size > CHARS_LIMIT:
                 break
             next.append(line)
@@ -376,7 +376,7 @@ def translate_google(subs, *, args, cache=None):
 
             try:
                 for line in stdout.split('\n'):
-                    newi, newtext = line.split(SEP_CHAR, 1)
+                    newi, newtext = line.split(GOOGLE_SEP_CHAR, 1)
                     subs[int(newi)].content = newtext.strip()
                     cache[submap[int(newi)]] = newtext
                 break
