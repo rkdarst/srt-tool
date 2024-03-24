@@ -384,9 +384,11 @@ def translate_google(subs, *, args, cache=None):
                 import traceback
                 traceback.print_exc()
                 print(exc)
+                print(f"Last line: {line}")
                 print("failure parsing, try again")
                 continue
     for i in duplicate_subs:
+        if i in duplicate_subs: continue
         subs[i].content = cache[submap[i]]
 
     return subs
