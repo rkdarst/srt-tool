@@ -193,6 +193,11 @@ def get_cache(cache_name, video, cache_path):
     cache_path = relative_to(cache_path, **{'@': video.parent})
     return SqliteDict(cache_path, tablename=cache_name, encode=json.dumps, decode=json.loads, autocommit=True)
 
+#def open_relative(filename, mode, video, cache_path):
+#    if not cache_path:
+#        return open(filename, mode)
+
+
 
 def read_subs(filename):
     """Read a file and get subtitles from it, however it may be.
