@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import textwrap
 import time
 
 import srt
@@ -30,7 +31,11 @@ WHISPER_ARGS = [
     '--initial_prompt=Hello, and welcome to day 3 of our lecture.  Today, we will discuss varous topics.',
     ]
 IGNORE_TRANSLATIONS = {'.'}
+IGNORE_TRANSLATIONS_RE = [
+    re.compile('.*papapapapapapapapapapa'),
+    ]
 GOOGLE_SEP_CHAR = '-.'
+LLM_SEP_CHAR = ':'
 
 
 def main(args=sys.argv[1:]):
@@ -66,7 +71,7 @@ def main(args=sys.argv[1:]):
     sp_combine.add_argument('srtout', type=Path)
     sp_combine.set_defaults(combine=True)
 
-    for name, transfunc in [('argos', translate_argos), ('google', translate_google), ('azure', translate_azure)]:
+    for name, transfunc in [('argos', translate_argos), ('google', translate_google), ('azure', translate_azure), ('llm', translate_llm)]:
         sp = subparsers.add_parser(name, help=f'Translate srt with {name}')
         sp.add_argument('srt', type=Path)
         sp.add_argument('srtout', type=Path)
@@ -85,6 +90,7 @@ def main(args=sys.argv[1:]):
         ('argos', 'r', ', requires other setup of Argos first.'),
         ('google', 'g', ', requires manual copying/pasting to Google Translate.'),
         ('azure', 'z', ', requires AZURE_KEY to be set.'),
+        ('llm', 'l', ', requires manual copying/pasting via a LLM interface.'),
         ]:
         sp_auto.add_argument(f'-{letter}', f'--{name}', action='store_true',
                              help=f"{name.title()} translate{extra} (set --sid-original)")
@@ -399,6 +405,93 @@ def translate_google(subs, *, args, cache=None):
     return subs
 
 
+def translate_llm(subs, *, args, cache=None):
+    """Translate through Google (manual work)"""
+
+    subs = copy.deepcopy(list(subs))
+    submap = { i: s.content.replace('\n', ' ') for i,s in enumerate(subs) }
+    CHARS_LIMIT = 2500
+    PLACEHOLDER = object()
+    if cache is None:
+        cache = { }
+
+    seen = set()
+    duplicate_subs = set()
+    for (i, text) in submap.items():
+        if text in seen:
+            duplicate_subs.add(i)
+            continue
+        seen.add(text)
+
+    print('seen:', seen)
+    print('ds:', duplicate_subs)
+
+    i = 0
+    while i < len(submap):
+        #import pdb ; pdb.set_trace()
+        next = [ ]
+        next.append(textwrap.dedent(
+        f"""\
+        Below, there are subtitles from a TV series.  Task: please translate all of the below from {args.lang} (or whatever language it is in) to English.  Try to match the structure, tone, and feel of the original as much as possible, because they will be read together.  Return only the new subtiles in the exact format as the input, and nothing else, and use the exact same format where the character "{LLM_SEP_CHAR}" is used to separate the number from the original.
+        """))
+        next.append("")
+        size = len(next[0])
+        while size < CHARS_LIMIT and i < len(submap):
+            #print(s)
+            if i in duplicate_subs:
+                i += 1
+                continue
+            if submap[i] in IGNORE_TRANSLATIONS:
+                i += 1
+                continue
+            for r in IGNORE_TRANSLATIONS_RE:
+                if r.match(submap[i]):
+                    i += 1
+                    continue
+            line = f"{i}{LLM_SEP_CHAR} {submap[i]}"
+            if len(line) + 1 + size > CHARS_LIMIT:
+                break
+            next.append(line)
+            size += len(line)+1  # +1 for newline
+            i += 1
+        stdin = '\n'.join(next)
+        #print(stdin)
+        while True:
+            if not stdin:
+                break
+            subprocess.run(['xclip', '-in'], input=stdin.encode(), check=True)
+            subprocess.run(['xclip', '-in', '-selection', 'clipboard'], input=stdin.encode(), check=True)
+            print(f"Copying {len(stdin)} bytes... paste into your LLM {args.lang}→en")
+
+
+            while True:
+                time.sleep(1)
+                print("Waiting for you to copy the output translation...")
+                p = subprocess.run(['xclip', '-out', '-selection', 'clipboard'], stdout=subprocess.PIPE, check=True)
+                stdout = p.stdout.decode()
+                if stdout != stdin:
+                    break
+
+            try:
+                for line in stdout.split('\n'):
+                    newi, newtext = line.split(LLM_SEP_CHAR, 1)
+                    subs[int(newi)].content = newtext.strip()
+                    cache[submap[int(newi)]] = newtext
+                break
+            except Exception as exc:
+                import traceback
+                traceback.print_exc()
+                print(exc)
+                print(f"Last line: {line}")
+                print("failure parsing, try again")
+                continue
+    for i in duplicate_subs:
+        if i in duplicate_subs: continue
+        subs[i].content = cache[submap[i]]
+
+    return subs
+
+
 
 def translate_azure(subs, *, args, cache=None):
     """Translate through Azure.  Requires API access"""
@@ -514,6 +607,7 @@ def whisper_auto(video, *, args):
         ('google_whisper', 'google', 'qeG', 'muG', translate_google),
         ('argos_whisper',  'argos', 'qeR', 'muR', translate_argos),
         ('azure_whisper',  'azure', 'qeZ', 'muZ', translate_azure),
+        ('llm_whisper',    'llm', 'qeL', 'muL', translate_llm),
         ]:
         if getattr(args, argname):
             if not args.whisper:
@@ -540,6 +634,7 @@ def whisper_auto(video, *, args):
         ('google', 'google', 'qeg', 'mug', translate_google),
         ('argos',  'argos', 'qer', 'mur', translate_argos),
         ('azure',  'azure', 'qez', 'muz', translate_azure),
+        ('llm',    'llm',   'qel', 'mul', translate_llm),
         ]:
         if getattr(args, argname):
             if not args.sid_original:
