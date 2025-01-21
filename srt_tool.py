@@ -50,6 +50,7 @@ def main(args=sys.argv[1:]):
     #                                                         'Only for the external translation services, Whisper only '
     #                                                         'translates to English.')
     parser.add_argument('--sub-cache', type=Path, help="Subtitle cache file (@/ is relative to each filename)")
+    parser.add_argument('--llm-chars', type=int, default=15000, help="Max number of bytes to emit for an LLM translation request.")
 
     subparsers = parser.add_subparsers()
 
@@ -410,48 +411,50 @@ def translate_llm(subs, *, args, cache=None):
 
     subs = copy.deepcopy(list(subs))
     submap = { i: s.content.replace('\n', ' ') for i,s in enumerate(subs) }
-    CHARS_LIMIT = 2500
+    print([(i, s.content) for i,s in enumerate(subs)])
+    CHARS_LIMIT = args.llm_chars
     PLACEHOLDER = object()
     if cache is None:
         cache = { }
 
     seen = set()
     duplicate_subs = set()
-    for (i, text) in submap.items():
-        if text in seen:
-            duplicate_subs.add(i)
-            continue
-        seen.add(text)
+    #for (i, text) in submap.items():
 
-    print('seen:', seen)
-    print('ds:', duplicate_subs)
+    #print('seen:', seen)
+    #print('ds:', duplicate_subs)
 
     i = 0
     while i < len(submap):
         #import pdb ; pdb.set_trace()
         next = [ ]
+        processed_lines = set()
         next.append(textwrap.dedent(
         f"""\
-        Below, there are subtitles from a TV series.  Task: please translate all of the below from {args.lang} (or whatever language it is in) to English.  Try to match the structure, tone, and feel of the original as much as possible, because they will be read together.  Return only the new subtiles in the exact format as the input, and nothing else, and use the exact same format where the character "{LLM_SEP_CHAR}" is used to separate the number from the original.
-        """))
+        Below, there are subtitles from a TV series.  Task: please translate all of the below from {args.lang} (or whatever language it is in) to English.  Match the structure and tone of the original as much as possible, because they will be read together.  Return the subtitles on separate lines, just like the input.  Don't combine lines.  Return only the new subtiles in the exact format as the input, and nothing else, and use the exact same format where the character "{LLM_SEP_CHAR}" is used to separate the number from the original.  Begin translation now:"""))
         next.append("")
         size = len(next[0])
         while size < CHARS_LIMIT and i < len(submap):
+            text = submap[i]
             #print(s)
-            if i in duplicate_subs:
-                i += 1
-                continue
-            if submap[i] in IGNORE_TRANSLATIONS:
+            if text in IGNORE_TRANSLATIONS:
                 i += 1
                 continue
             for r in IGNORE_TRANSLATIONS_RE:
-                if r.match(submap[i]):
+                if r.match(text):
                     i += 1
                     continue
             line = f"{i}{LLM_SEP_CHAR} {submap[i]}"
             if len(line) + 1 + size > CHARS_LIMIT:
                 break
+            if text in seen:
+                #print(f"Duplicate: {i} {text}")
+                duplicate_subs.add(i)
+                i += 1
+                continue
+            seen.add(text)
             next.append(line)
+            processed_lines.add(i)
             size += len(line)+1  # +1 for newline
             i += 1
         stdin = '\n'.join(next)
@@ -464,29 +467,36 @@ def translate_llm(subs, *, args, cache=None):
             print(f"Copying {len(stdin)} bytes... paste into your LLM {args.lang}→en")
 
 
-            while True:
+            for counter in itertools.count():
                 time.sleep(1)
-                print("Waiting for you to copy the output translation...")
+                spinner = r'-\|/'
+                print(f"\rWaiting for you to copy the output translation... {spinner[counter%4]}", end="")
                 p = subprocess.run(['xclip', '-out', '-selection', 'clipboard'], stdout=subprocess.PIPE, check=True)
                 stdout = p.stdout.decode()
                 if stdout != stdin:
+                    print()
                     break
 
             try:
+                print(f"Read {len(stdout)} bytes (in+out = {len(stdin)+len(stdout)} bytes)")
                 for line in stdout.split('\n'):
-                    newi, newtext = line.split(LLM_SEP_CHAR, 1)
-                    subs[int(newi)].content = newtext.strip()
-                    cache[submap[int(newi)]] = newtext
+                    i_out, newtext = line.split(LLM_SEP_CHAR, 1)
+                    subs[int(i_out)].content = newtext.strip()
+                    cache[submap[int(i_out)]] = newtext
+                    processed_lines.remove(int(i_out))
+                if len(processed_lines) > 0:
+                    print(f"These lines were not translated: {processed_lines}")
                 break
             except Exception as exc:
                 import traceback
                 traceback.print_exc()
                 print(exc)
-                print(f"Last line: {line}")
+                print(f"Previous line: {i_out}")
+                print(f"Current line: {line}")
                 print("failure parsing, try again")
                 continue
     for i in duplicate_subs:
-        if i in duplicate_subs: continue
+        print(f"Looking up {i} in cache ({submap[i]})")
         subs[i].content = cache[submap[i]]
 
     return subs
