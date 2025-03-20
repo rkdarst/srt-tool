@@ -66,7 +66,7 @@ def main(args=sys.argv[1:]):
     sp_trl.add_argument('video', nargs='+', type=Path)
     sp_trs.set_defaults(whisper_translate=True)
 
-    sp_combine = subparsers.add_parser('combine', help='combine two srt files, coloring the second one')
+    sp_combine = subparsers.add_parser('combine', help="combine two srt files", description='Combine two srt files, coloring the second one')
     sp_combine.add_argument('srt1', type=Path)
     sp_combine.add_argument('srt2', type=Path)
     sp_combine.add_argument('srtout', type=Path)
