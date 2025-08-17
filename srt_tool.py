@@ -50,7 +50,7 @@ def main(args=sys.argv[1:]):
     #                                                         'Only for the external translation services, Whisper only '
     #                                                         'translates to English.')
     parser.add_argument('--sub-cache', type=Path, help="Subtitle cache file (@/ is relative to each filename)")
-    parser.add_argument('--llm-chars', type=int, default=15000, help="Max number of bytes to emit for an LLM translation request.")
+    parser.add_argument('--llm-chars', type=int, default=3500, help="Max number of bytes to emit for an LLM translation request (default %(default)s).")
 
     subparsers = parser.add_subparsers()
 
