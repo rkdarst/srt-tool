@@ -411,7 +411,7 @@ def translate_llm(subs, *, args, cache=None):
 
     subs = copy.deepcopy(list(subs))
     submap = { i: s.content.replace('\n', ' ') for i,s in enumerate(subs) }
-    print([(i, s.content) for i,s in enumerate(subs)])
+    #print([(i, s.content) for i,s in enumerate(subs)])
     CHARS_LIMIT = args.llm_chars
     PLACEHOLDER = object()
     if cache is None:
@@ -485,7 +485,7 @@ def translate_llm(subs, *, args, cache=None):
                     cache[submap[int(i_out)]] = newtext
                     processed_lines.remove(int(i_out))
                 if len(processed_lines) > 0:
-                    print(f"These lines were not translated: {processed_lines}")
+                    print(f"  These lines were not translated: {processed_lines}")
                 break
             except Exception as exc:
                 import traceback
